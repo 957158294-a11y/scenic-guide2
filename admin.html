@@ -49,6 +49,7 @@
         .toast.show { transform:translateX(-50%) translateY(0); }
         .password-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:999; display:flex; align-items:center; justify-content:center; }
         .password-box { background:#fff; padding:30px; border-radius:16px; text-align:center; width:90%; max-width:350px; }
+        .info-bar { background:#fff; padding:12px; border-radius:12px; margin-bottom:16px; font-size:0.85rem; display:flex; justify-content:space-between; align-items:center; }
     </style>
 </head>
 <body>
@@ -72,12 +73,17 @@
                     <button data-lang="en">EN</button>
                     <button data-lang="vi">VI</button>
                 </div>
+                <button class="btn btn-outline btn-sm" id="btnRefresh">🔄 刷新数据</button>
                 <button class="btn btn-outline btn-sm" id="btnExport">📤 导出数据</button>
             </div>
         </header>
         <div class="main-container">
+            <div class="info-bar">
+                <span>📌 自动保存已开启，关闭页面数据不会丢失</span>
+                <span>点位：<strong id="spotCount">0</strong></span>
+            </div>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                <span style="font-weight:700;">共 <span id="spotCount">0</span> 个点位</span>
+                <span></span>
                 <button class="btn btn-primary" id="btnAddSpot">＋ 添加点位</button>
             </div>
             <div class="spot-list" id="spotList"></div>
@@ -90,15 +96,12 @@
                 <h3 id="formTitle" style="margin-bottom:20px;">添加点位</h3>
                 <form id="spotForm">
                     <input type="hidden" id="editId">
-                    <!-- 三语名称 -->
                     <div class="form-group"><span class="lang-badge">中</span> 名称 <input class="form-input" id="nameZh" required></div>
                     <div class="form-group"><span class="lang-badge">EN</span> Name <input class="form-input" id="nameEn"></div>
                     <div class="form-group"><span class="lang-badge">VI</span> Tên <input class="form-input" id="nameVi"></div>
-                    <!-- 三语描述 -->
                     <div class="form-group"><span class="lang-badge">中</span> 讲解文字 <textarea class="form-textarea" id="descZh" rows="2"></textarea></div>
                     <div class="form-group"><span class="lang-badge">EN</span> Description <textarea class="form-textarea" id="descEn" rows="2"></textarea></div>
                     <div class="form-group"><span class="lang-badge">VI</span> Mô tả <textarea class="form-textarea" id="descVi" rows="2"></textarea></div>
-                    <!-- 图片 -->
                     <div class="form-group">
                         📷 图片
                         <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
@@ -108,27 +111,11 @@
                         </div>
                         <img id="imagePreview" style="width:100%; max-height:150px; object-fit:cover; border-radius:8px; margin-top:8px; display:none;">
                     </div>
-                    <!-- 三语音频 -->
                     <div class="form-group">
                         🎵 讲解音频（三个语言各上传一个）
-                        <div class="audio-row">
-                            <span class="lang-badge">中</span>
-                            <label class="file-label" id="audioZhLabel" for="audioZhInput">🎤 选择文件</label>
-                            <input type="file" id="audioZhInput" accept="audio/*" style="display:none;">
-                            <span id="audioZhInfo"></span>
-                        </div>
-                        <div class="audio-row">
-                            <span class="lang-badge">EN</span>
-                            <label class="file-label" id="audioEnLabel" for="audioEnInput">🎤 选择文件</label>
-                            <input type="file" id="audioEnInput" accept="audio/*" style="display:none;">
-                            <span id="audioEnInfo"></span>
-                        </div>
-                        <div class="audio-row">
-                            <span class="lang-badge">VI</span>
-                            <label class="file-label" id="audioViLabel" for="audioViInput">🎤 选择文件</label>
-                            <input type="file" id="audioViInput" accept="audio/*" style="display:none;">
-                            <span id="audioViInfo"></span>
-                        </div>
+                        <div class="audio-row"><span class="lang-badge">中</span><label class="file-label" id="audioZhLabel" for="audioZhInput">🎤 选择文件</label><input type="file" id="audioZhInput" accept="audio/*" style="display:none;"><span id="audioZhInfo"></span></div>
+                        <div class="audio-row"><span class="lang-badge">EN</span><label class="file-label" id="audioEnLabel" for="audioEnInput">🎤 选择文件</label><input type="file" id="audioEnInput" accept="audio/*" style="display:none;"><span id="audioEnInfo"></span></div>
+                        <div class="audio-row"><span class="lang-badge">VI</span><label class="file-label" id="audioViLabel" for="audioViInput">🎤 选择文件</label><input type="file" id="audioViInput" accept="audio/*" style="display:none;"><span id="audioViInfo"></span></div>
                     </div>
                     <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
                         <button type="button" class="btn btn-outline" id="btnCancelForm">取消</button>
@@ -156,12 +143,12 @@
     <script>
         (function() {
             const ADMIN_PASSWORD = 'admin888';
+            const STORAGE_KEY = 'scenic_admin_spots';
             const $ = s => document.querySelector(s);
             let spots = [];
             let currentLang = 'zh';
             let editingId = null;
             let pendingImage = null;
-            // 三语音频
             let pendingAudio = { zh: null, en: null, vi: null };
             let pendingAudioNames = { zh: '', en: '', vi: '' };
 
@@ -178,15 +165,24 @@
             $('#passwordInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnLogin').click(); });
 
             async function init() {
-                await loadSpots();
+                // 优先从本地存储加载
+                const saved = localStorage.getItem(STORAGE_KEY);
+                if (saved) {
+                    spots = JSON.parse(saved);
+                    console.log('从本地缓存加载了', spots.length, '个点位');
+                } else {
+                    await loadFromServer();
+                }
                 renderList();
                 bindEvents();
             }
 
-            async function loadSpots() {
+            async function loadFromServer() {
                 try {
                     const res = await fetch('spots.json?t=' + Date.now());
                     spots = await res.json();
+                    console.log('从服务器加载了', spots.length, '个点位');
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(spots));
                 } catch(e) {
                     spots = [];
                 }
@@ -216,7 +212,9 @@
                     item.querySelector('.del-btn').onclick = () => {
                         if (confirm('确定删除？')) {
                             spots = spots.filter(s => s.id !== spot.id);
+                            saveLocal();
                             renderList();
+                            showToast('已删除');
                         }
                     };
                     list.appendChild(item);
@@ -228,12 +226,18 @@
                 $('#btnCloseForm').addEventListener('click', closeForm);
                 $('#btnCancelForm').addEventListener('click', closeForm);
                 $('#btnExport').addEventListener('click', exportData);
+                $('#btnRefresh').addEventListener('click', async () => {
+                    if (confirm('刷新将从服务器重新加载数据，本地未导出修改可能丢失，确定继续？')) {
+                        await loadFromServer();
+                        renderList();
+                        showToast('已从服务器同步');
+                    }
+                });
                 $('#btnCloseQR').addEventListener('click', () => { $('#modalQR').style.display = 'none'; $('#qrCanvas').innerHTML = ''; });
                 $('#btnCopyQR').addEventListener('click', () => {
                     const url = $('#qrUrlText').textContent;
                     if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => showToast('链接已复制'));
                 });
-
                 document.getElementById('langToggle').addEventListener('click', e => {
                     const btn = e.target.closest('button');
                     if (!btn) return;
@@ -267,7 +271,6 @@
                     reader.readAsDataURL(file);
                 });
 
-                // 三语音频上传处理
                 const setupAudioUpload = (lang, inputId, labelId, infoId) => {
                     $(`#${inputId}`).addEventListener('change', function(e) {
                         const file = e.target.files[0];
@@ -286,32 +289,15 @@
                 setupAudioUpload('en', 'audioEnInput', 'audioEnLabel', 'audioEnInfo');
                 setupAudioUpload('vi', 'audioViInput', 'audioViLabel', 'audioViInfo');
 
-                // 表单提交
                 $('#spotForm').addEventListener('submit', function(e) {
                     e.preventDefault();
                     const spotData = {
                         id: editingId || 'spot_' + Date.now(),
-                        name: {
-                            zh: $('#nameZh').value.trim(),
-                            en: $('#nameEn').value.trim(),
-                            vi: $('#nameVi').value.trim()
-                        },
-                        description: {
-                            zh: $('#descZh').value.trim(),
-                            en: $('#descEn').value.trim(),
-                            vi: $('#descVi').value.trim()
-                        },
+                        name: { zh: $('#nameZh').value.trim(), en: $('#nameEn').value.trim(), vi: $('#nameVi').value.trim() },
+                        description: { zh: $('#descZh').value.trim(), en: $('#descEn').value.trim(), vi: $('#descVi').value.trim() },
                         image: pendingImage || '',
-                        audio: {
-                            zh: pendingAudio.zh || '',
-                            en: pendingAudio.en || '',
-                            vi: pendingAudio.vi || ''
-                        },
-                        audioNames: {
-                            zh: pendingAudioNames.zh || '',
-                            en: pendingAudioNames.en || '',
-                            vi: pendingAudioNames.vi || ''
-                        },
+                        audio: { zh: pendingAudio.zh || '', en: pendingAudio.en || '', vi: pendingAudio.vi || '' },
+                        audioNames: { zh: pendingAudioNames.zh || '', en: pendingAudioNames.en || '', vi: pendingAudioNames.vi || '' },
                         createdAt: editingId ? (spots.find(s => s.id === editingId)?.createdAt || Date.now()) : Date.now()
                     };
                     if (editingId) {
@@ -320,6 +306,7 @@
                     } else {
                         spots.unshift(spotData);
                     }
+                    saveLocal();
                     renderList();
                     closeForm();
                     showToast('保存成功');
@@ -332,7 +319,6 @@
                 $('#formTitle').textContent = '添加点位';
                 $('#modalForm').style.display = 'flex';
             }
-
             function openEdit(id) {
                 const spot = spots.find(s => s.id === id);
                 if (!spot) return;
@@ -345,67 +331,60 @@
                 $('#descEn').value = spot.description.en || '';
                 $('#descVi').value = spot.description.vi || '';
                 pendingImage = spot.image || null;
-                pendingAudio = { ...spot.audio } || { zh: null, en: null, vi: null };
-                pendingAudioNames = { ...spot.audioNames } || { zh: '', en: '', vi: '' };
-                // 图片预览
+                pendingAudio = { ...(spot.audio || {}) };
+                pendingAudioNames = { ...(spot.audioNames || {}) };
                 if (spot.image) {
                     $('#imagePreview').src = spot.image;
                     $('#imagePreview').style.display = '';
                     $('#imageLabel').classList.add('uploaded');
                     $('#imageInfo').textContent = '已上传';
                 }
-                // 音频状态
-                ['zh', 'en', 'vi'].forEach(lang => {
+                ['zh','en','vi'].forEach(lang => {
                     if (spot.audio?.[lang]) {
-                        $(`#audio${lang.charAt(0).toUpperCase() + lang.slice(1)}Label`).classList.add('uploaded');
-                        $(`#audio${lang.charAt(0).toUpperCase() + lang.slice(1)}Info`).textContent = spot.audioNames?.[lang] || '已上传';
+                        const L = lang.charAt(0).toUpperCase() + lang.slice(1);
+                        $(`#audio${L}Label`).classList.add('uploaded');
+                        $(`#audio${L}Info`).textContent = spot.audioNames?.[lang] || '已上传';
                     }
                 });
                 $('#formTitle').textContent = '编辑点位';
                 $('#modalForm').style.display = 'flex';
             }
-
             function resetForm() {
-                ['editId', 'nameZh', 'nameEn', 'nameVi', 'descZh', 'descEn', 'descVi'].forEach(id => $('#' + id).value = '');
+                ['editId','nameZh','nameEn','nameVi','descZh','descEn','descVi'].forEach(id => $('#'+id).value='');
                 pendingImage = null;
                 pendingAudio = { zh: null, en: null, vi: null };
                 pendingAudioNames = { zh: '', en: '', vi: '' };
-                $('#imagePreview').style.display = 'none';
-                $('#imageInfo').textContent = '';
-                $('#imageLabel').classList.remove('uploaded');
-                ['zh', 'en', 'vi'].forEach(lang => {
-                    $(`#audio${lang.charAt(0).toUpperCase() + lang.slice(1)}Info`).textContent = '';
-                    $(`#audio${lang.charAt(0).toUpperCase() + lang.slice(1)}Label`).classList.remove('uploaded');
-                    $(`#audio${lang.charAt(0).toUpperCase() + lang.slice(1)}Input`).value = '';
+                $('#imagePreview').style.display = 'none'; $('#imageInfo').textContent = ''; $('#imageLabel').classList.remove('uploaded');
+                ['Zh','En','Vi'].forEach(L => {
+                    $(`#audio${L}Info`).textContent = '';
+                    $(`#audio${L}Label`).classList.remove('uploaded');
+                    $(`#audio${L}Input`).value = '';
                 });
                 $('#imageInput').value = '';
             }
-
             function closeForm() { $('#modalForm').style.display = 'none'; }
-
+            function saveLocal() { localStorage.setItem(STORAGE_KEY, JSON.stringify(spots)); }
             function exportData() {
+                saveLocal();
                 const json = JSON.stringify(spots, null, 2);
                 const blob = new Blob([json], { type: 'application/json' });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = 'spots.json';
                 a.click();
-                showToast('spots.json 已下载，请上传到 GitHub 替换原文件');
+                showToast('数据已导出为 spots.json，请上传到 GitHub 仓库替换原文件');
             }
-
             function showQR(id) {
-                const base = window.location.origin + window.location.pathname.replace('admin.html', 'index.html');
+                const base = window.location.origin + window.location.pathname.replace('admin.html','index.html');
                 const url = base + '?point=' + id;
                 $('#qrUrlText').textContent = url;
                 $('#qrCanvas').innerHTML = '';
                 $('#modalQR').style.display = 'flex';
-                try { new QRCode($('#qrCanvas'), { text: url, width: 200, height: 200, colorDark: '#2D3436' }); } catch (e) {}
+                try { new QRCode($('#qrCanvas'), { text: url, width: 200, height: 200, colorDark: '#2D3436' }); } catch(e){}
             }
-
             function showToast(msg) {
                 const t = $('#toast');
-                t.textContent = msg;
-                t.className = 'toast show';
+                t.textContent = msg; t.className = 'toast show';
                 setTimeout(() => t.classList.remove('show'), 2000);
             }
             function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
