@@ -21,9 +21,9 @@
         .header-title { font-weight:700; color:var(--primary); font-size:1rem; line-height:1.3; }
         .lang-area { display:flex; flex-direction:column; align-items:flex-end; }
         .lang-toggle { display:flex; background:#f0f0f0; border-radius:20px; padding:3px; }
-        .lang-toggle button { padding:6px 12px; border:none; background:transparent; border-radius:20px; font-weight:600; color:#666; cursor:pointer; font-family:inherit; font-size:0.85rem; }
+        .lang-toggle button { padding:5px 10px; border:none; background:transparent; border-radius:20px; font-weight:600; color:#666; cursor:pointer; font-family:inherit; font-size:0.8rem; white-space:nowrap; }
         .lang-toggle button.active { background:#fff; color:var(--primary); box-shadow:0 2px 6px rgba(0,0,0,0.1); }
-        .lang-hint { font-size:0.7rem; color:#999; margin-top:4px; }
+        .lang-hint { font-size:0.65rem; color:#999; margin-top:4px; text-align:center; line-height:1.2; }
         .main-container { max-width:700px; margin:0 auto; padding:20px 16px; }
         .spot-grid { display:flex; flex-direction:column; gap:14px; }
         .spot-card { background:var(--card-bg); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow); cursor:pointer; display:flex; }
@@ -56,11 +56,11 @@
         <div class="header-title" id="headerTitle">中越德天（板约）瀑布跨境旅游合作区讲解</div>
         <div class="lang-area">
             <div class="lang-toggle" id="langToggle">
-                <button data-lang="zh" class="active">中</button>
-                <button data-lang="en">EN</button>
-                <button data-lang="vi">VI</button>
+                <button data-lang="zh" class="active">中文</button>
+                <button data-lang="en">English</button>
+                <button data-lang="vi">Tiếng Việt</button>
             </div>
-            <div class="lang-hint" id="langHint">切换语言</div>
+            <div class="lang-hint">Change Language / 切换语言 / Đổi ngôn ngữ</div>
         </div>
     </header>
 
@@ -96,11 +96,9 @@
 
     <script>
         (function() {
-            // 多语言字典
             const i18n = {
                 zh: {
                     headerTitle: '中越德天（板约）瀑布跨境旅游合作区讲解',
-                    langHint: '切换语言',
                     audioHint: '点击播放语音讲解',
                     shareQR: '📱 分享二维码',
                     qrTitle: '扫码听讲解',
@@ -108,13 +106,10 @@
                     copyLink: '📋 复制链接',
                     noSpots: '暂无讲解点位',
                     noAudio: '暂无该语言讲解音频',
-                    urlCopied: '链接已复制',
-                    loading: '正在加载讲解内容…',
-                    loadError: '网络不稳定，讲解内容加载失败，请稍后刷新重试。'
+                    urlCopied: '链接已复制'
                 },
                 en: {
                     headerTitle: 'China-Vietnam Detian (Ban Gioc) Waterfall Cross-border Tourism Cooperation Zone Guide',
-                    langHint: 'Switch Language',
                     audioHint: 'Tap to play audio guide',
                     shareQR: '📱 Share QR Code',
                     qrTitle: 'Scan to listen',
@@ -122,13 +117,10 @@
                     copyLink: '📋 Copy Link',
                     noSpots: 'No spots available',
                     noAudio: 'No audio for this language',
-                    urlCopied: 'Link copied',
-                    loading: 'Loading audio guide…',
-                    loadError: 'Network unstable, failed to load content. Please refresh later.'
+                    urlCopied: 'Link copied'
                 },
                 vi: {
                     headerTitle: 'Khu Hợp Tác Du Lịch Xuyên Biên Giới Thác Detian (Bản Giốc) Việt-Trung',
-                    langHint: 'Đổi ngôn ngữ',
                     audioHint: 'Nhấn để nghe thuyết minh',
                     shareQR: '📱 Chia sẻ mã QR',
                     qrTitle: 'Quét mã để nghe',
@@ -136,9 +128,7 @@
                     copyLink: '📋 Sao chép liên kết',
                     noSpots: 'Không có điểm thuyết minh',
                     noAudio: 'Không có âm thanh cho ngôn ngữ này',
-                    urlCopied: 'Đã sao chép liên kết',
-                    loading: 'Đang tải nội dung…',
-                    loadError: 'Mạng không ổn định, không thể tải nội dung. Vui lòng làm mới sau.'
+                    urlCopied: 'Đã sao chép liên kết'
                 }
             };
 
@@ -152,37 +142,29 @@
             const domAudio = $('#audioPlayer');
             const domToast = $('#toast');
             const domHeaderTitle = $('#headerTitle');
-            const domLangHint = $('#langHint');
 
             let currentLang = 'zh';
             let spots = [];
             let currentSpot = null;
 
-            // 更新界面上的所有多语言文本
             function applyLanguage() {
                 domHeaderTitle.textContent = i18n[currentLang].headerTitle;
-                domLangHint.textContent = i18n[currentLang].langHint;
                 document.getElementById('emptyMsg').textContent = i18n[currentLang].noSpots;
-                // 更新二维码按钮和弹窗文本（如果正在显示）
                 const btnShare = $('#btnShowQR');
                 if (btnShare) btnShare.innerHTML = i18n[currentLang].shareQR;
-                const qrTitle = $('#qrTitle');
-                if (qrTitle) qrTitle.textContent = i18n[currentLang].qrTitle;
-                const qrHint = $('#qrHint');
-                if (qrHint) qrHint.textContent = i18n[currentLang].qrHint;
-                const btnCopy = $('#btnCopyURL');
-                if (btnCopy) btnCopy.innerHTML = i18n[currentLang].copyLink;
-                // 详情页中的音频提示
+                if (domModalQR.style.display === 'flex') {
+                    $('#qrTitle').textContent = i18n[currentLang].qrTitle;
+                    $('#qrHint').textContent = i18n[currentLang].qrHint;
+                    $('#btnCopyURL').innerHTML = i18n[currentLang].copyLink;
+                }
                 const audioHintEl = document.getElementById('audioHintText');
                 if (audioHintEl) audioHintEl.textContent = i18n[currentLang].audioHint;
-                // 更新详情标题和描述（如果详情正在显示）
                 if (currentSpot && domDetailView.style.display !== 'none') {
                     renderDetail();
                 }
             }
 
             async function loadSpots() {
-                // 加载动画和重试逻辑已省略，保持简洁，如有需要可加回
                 try {
                     const res = await fetch('spots.json?t=' + Date.now());
                     spots = await res.json();
@@ -288,14 +270,6 @@
                 loadAudio();
             }
 
-            function backToList() {
-                domAudio.pause();
-                domListView.style.display = '';
-                domDetailView.style.display = 'none';
-                currentSpot = null;
-            }
-
-            // 语言切换
             document.getElementById('langToggle').addEventListener('click', e => {
                 const btn = e.target.closest('button');
                 if (!btn) return;
@@ -312,13 +286,11 @@
                 }
             });
 
-            // 二维码
             $('#btnShowQR').addEventListener('click', () => {
                 if (!currentSpot) return;
                 const url = window.location.origin + window.location.pathname + '?point=' + currentSpot.id;
                 $('#qrCanvasWrapper').innerHTML = '';
                 domModalQR.style.display = 'flex';
-                // 设置弹窗文本
                 $('#qrTitle').textContent = i18n[currentLang].qrTitle;
                 $('#qrHint').textContent = i18n[currentLang].qrHint;
                 $('#btnCopyURL').innerHTML = i18n[currentLang].copyLink;
