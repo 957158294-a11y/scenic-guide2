@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>景区讲解管理后台</title>
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <style>
         :root {
             --primary: #3B7D5E;
@@ -55,7 +56,6 @@
     </style>
 </head>
 <body>
-    <!-- 密码验证 -->
     <div class="password-overlay" id="passwordOverlay">
         <div class="password-box">
             <h2 style="margin-bottom:16px;">🔐 管理后台</h2>
@@ -65,7 +65,6 @@
         </div>
     </div>
 
-    <!-- 主界面 -->
     <div id="appMain" style="display:none;">
         <header class="header">
             <div class="header-title">🔧 讲解点位管理</div>
@@ -75,24 +74,23 @@
                     <button data-lang="en">EN</button>
                     <button data-lang="vi">VI</button>
                 </div>
-                <button class="btn btn-outline btn-sm" id="btnRefresh">🔄 刷新数据</button>
-                <button class="btn btn-outline btn-sm" id="btnExport">📤 导出数据</button>
+                <button class="btn btn-outline btn-sm" id="btnRefresh">🔄 刷新</button>
+                <button class="btn btn-outline btn-sm" id="btnExport">📦 导出ZIP</button>
                 <button class="btn btn-warning btn-sm" id="btnClearStorage">🗑️ 清除缓存</button>
             </div>
         </header>
         <div class="main-container">
             <div class="info-bar">
-                <span>📌 所有文件暂存于浏览器数据库，无容量限制</span>
+                <span id="storageInfo">存储用量：计算中...</span>
                 <span>点位：<strong id="spotCount">0</strong></span>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                <span></span>
+                <span style="font-size:0.8rem; color:#888;">⚠️ 存储空间不足时请先导出并清理缓存</span>
                 <button class="btn btn-primary" id="btnAddSpot">＋ 添加点位</button>
             </div>
             <div class="spot-list" id="spotList"></div>
         </div>
 
-        <!-- 编辑弹窗 -->
         <div class="modal-overlay" id="modalForm" style="display:none;">
             <div class="modal-sheet">
                 <button style="float:right; background:none; border:none; font-size:1.5rem; cursor:pointer;" id="btnCloseForm">✕</button>
@@ -115,10 +113,10 @@
                         <img id="imagePreview" style="width:100%; max-height:150px; object-fit:cover; border-radius:8px; margin-top:8px; display:none;">
                     </div>
                     <div class="form-group">
-                        🎵 讲解音频（三个语言各上传一个）
-                        <div class="audio-row"><span class="lang-badge">中</span><label class="file-label" id="audioZhLabel" for="audioZhInput">🎤 选择文件</label><input type="file" id="audioZhInput" accept="audio/*" style="display:none;"><span id="audioZhInfo"></span></div>
-                        <div class="audio-row"><span class="lang-badge">EN</span><label class="file-label" id="audioEnLabel" for="audioEnInput">🎤 选择文件</label><input type="file" id="audioEnInput" accept="audio/*" style="display:none;"><span id="audioEnInfo"></span></div>
-                        <div class="audio-row"><span class="lang-badge">VI</span><label class="file-label" id="audioViLabel" for="audioViInput">🎤 选择文件</label><input type="file" id="audioViInput" accept="audio/*" style="display:none;"><span id="audioViInfo"></span></div>
+                        🎵 讲解音频（每语言一个）
+                        <div class="audio-row"><span class="lang-badge">中</span><label class="file-label" id="audioZhLabel" for="audioZhInput">🎤 选择</label><input type="file" id="audioZhInput" accept="audio/*" style="display:none;"><span id="audioZhInfo"></span></div>
+                        <div class="audio-row"><span class="lang-badge">EN</span><label class="file-label" id="audioEnLabel" for="audioEnInput">🎤 选择</label><input type="file" id="audioEnInput" accept="audio/*" style="display:none;"><span id="audioEnInfo"></span></div>
+                        <div class="audio-row"><span class="lang-badge">VI</span><label class="file-label" id="audioViLabel" for="audioViInput">🎤 选择</label><input type="file" id="audioViInput" accept="audio/*" style="display:none;"><span id="audioViInfo"></span></div>
                     </div>
                     <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
                         <button type="button" class="btn btn-outline" id="btnCancelForm">取消</button>
@@ -128,7 +126,6 @@
             </div>
         </div>
 
-        <!-- 二维码弹窗 -->
         <div class="modal-overlay" id="modalQR" style="display:none;">
             <div class="modal-sheet" style="text-align:center;">
                 <button style="float:right; background:none; border:none; font-size:1.5rem; cursor:pointer;" id="btnCloseQR">✕</button>
@@ -140,29 +137,27 @@
         </div>
     </div>
 
-    <audio id="audioPreview" style="display:none;"></audio>
     <div class="toast" id="toast"></div>
-
     <script>
         (function() {
             const ADMIN_PASSWORD = 'admin888';
-            const STORAGE_KEY = 'scenic_admin_spots_meta'; // 只存元数据，不含Base64文件
+            const STORAGE_KEY = 'scenic_admin_spots_meta';
             const DB_NAME = 'scenic_files_db';
             const DB_VERSION = 1;
             const STORE_NAME = 'files';
+            const MEDIA_PREFIX = 'media/';
 
             const $ = s => document.querySelector(s);
-            let spots = []; // 存储点位元数据，图片/音频字段为数据库中的key或空
+            let spots = [];
             let currentLang = 'zh';
             let editingId = null;
-            // 当前表单中待上传的文件（图片及三语音频），以Blob形式暂存
             let pendingImageBlob = null;
             let pendingImagePreviewUrl = null;
             let pendingAudioBlobs = { zh: null, en: null, vi: null };
             let pendingAudioNames = { zh: '', en: '', vi: '' };
-
-            // IndexedDB 初始化
             let db = null;
+
+            // IndexedDB 操作
             function openDB() {
                 return new Promise((resolve, reject) => {
                     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -172,31 +167,37 @@
                             db.createObjectStore(STORE_NAME, { keyPath: 'id' });
                         }
                     };
-                    request.onsuccess = (e) => {
-                        db = e.target.result;
-                        resolve(db);
-                    };
+                    request.onsuccess = (e) => { db = e.target.result; resolve(db); };
                     request.onerror = (e) => reject(e.target.error);
                 });
             }
-            function saveFileToDB(id, blob) {
+
+            async function saveFileToDB(id, blob) {
                 return new Promise((resolve, reject) => {
                     const tx = db.transaction(STORE_NAME, 'readwrite');
                     const store = tx.objectStore(STORE_NAME);
-                    store.put({ id, blob });
-                    tx.oncomplete = () => resolve();
-                    tx.onerror = () => reject(tx.error);
+                    const putReq = store.put({ id, blob });
+                    putReq.onsuccess = () => resolve();
+                    putReq.onerror = (e) => {
+                        if (e.target.error && e.target.error.name === 'QuotaExceededError') {
+                            reject(new Error('QuotaExceededError'));
+                        } else {
+                            reject(e.target.error);
+                        }
+                    };
                 });
             }
+
             function getFileFromDB(id) {
                 return new Promise((resolve, reject) => {
                     const tx = db.transaction(STORE_NAME, 'readonly');
                     const store = tx.objectStore(STORE_NAME);
-                    const request = store.get(id);
-                    request.onsuccess = () => resolve(request.result ? request.result.blob : null);
-                    request.onerror = () => reject(request.error);
+                    const getReq = store.get(id);
+                    getReq.onsuccess = () => resolve(getReq.result ? getReq.result.blob : null);
+                    getReq.onerror = () => reject(getReq.error);
                 });
             }
+
             function deleteFileFromDB(id) {
                 return new Promise((resolve, reject) => {
                     const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -206,16 +207,47 @@
                     tx.onerror = () => reject(tx.error);
                 });
             }
-            function blobToBase64(blob) {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(reader.result);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(blob);
-                });
+
+            function dataURLtoBlob(dataurl) {
+                const arr = dataurl.split(',');
+                const mime = arr[0].match(/:(.*?);/)[1];
+                const bstr = atob(arr[1]);
+                let n = bstr.length;
+                const u8arr = new Uint8Array(n);
+                while(n--) u8arr[n] = bstr.charCodeAt(n);
+                return new Blob([u8arr], {type: mime});
             }
 
-            // 密码
+            async function fetchBlobFromURL(url) {
+                const res = await fetch(url);
+                return await res.blob();
+            }
+
+            // 更新存储用量显示
+            async function updateStorageInfo() {
+                const infoEl = $('#storageInfo');
+                if (!infoEl) return;
+                try {
+                    const estimate = await navigator.storage.estimate();
+                    if (estimate.quota && estimate.usage) {
+                        const usedMB = (estimate.usage / 1024 / 1024).toFixed(1);
+                        const quotaMB = (estimate.quota / 1024 / 1024).toFixed(1);
+                        const percent = ((estimate.usage / estimate.quota) * 100).toFixed(1);
+                        infoEl.textContent = `💾 已用 ${usedMB} MB / 总共 ${quotaMB} MB (${percent}%)`;
+                        if (percent > 80) {
+                            infoEl.style.color = '#D32F2F';
+                        } else {
+                            infoEl.style.color = '';
+                        }
+                    } else {
+                        infoEl.textContent = '存储用量：无法获取';
+                    }
+                } catch(e) {
+                    infoEl.textContent = '存储用量：计算失败';
+                }
+            }
+
+            // 密码验证
             $('#btnLogin').addEventListener('click', async () => {
                 if ($('#passwordInput').value === ADMIN_PASSWORD) {
                     $('#passwordOverlay').style.display = 'none';
@@ -231,19 +263,14 @@
             async function init() {
                 const saved = localStorage.getItem(STORAGE_KEY);
                 if (saved) {
-                    try {
-                        spots = JSON.parse(saved);
-                    } catch (e) {
-                        spots = [];
-                    }
-                    console.log('从本地缓存加载了', spots.length, '个点位');
+                    try { spots = JSON.parse(saved); } catch(e) { spots = []; }
                 } else {
                     await loadFromServer();
                 }
-                // 刷新所有预览图（从IDB读取blob生成blob URL）
                 await refreshAllPreviews();
                 renderList();
                 bindEvents();
+                updateStorageInfo(); // 初始显示
             }
 
             async function refreshAllPreviews() {
@@ -259,7 +286,6 @@
                 try {
                     const res = await fetch('spots.json?t=' + Date.now());
                     const serverSpots = await res.json();
-                    // 将服务器数据转为本地元数据（图片音频存入IDB，并用key替换）
                     spots = [];
                     for (const item of serverSpots) {
                         const spotMeta = {
@@ -268,43 +294,53 @@
                             description: {...item.description},
                             createdAt: item.createdAt || Date.now(),
                             _imageKey: null,
-                            _audioKeys: { zh: null, en: null, vi: null }
+                            _audioKeys: { zh: null, en: null, vi: null },
+                            _imageUrl: null,
+                            image: item.image || '',
+                            audio: {...(item.audio || {})}
                         };
-                        // 处理图片
+                        // 图片处理
                         if (item.image && item.image.startsWith('data:')) {
                             const blob = dataURLtoBlob(item.image);
                             const key = 'img_' + item.id;
-                            await saveFileToDB(key, blob);
+                            try { await saveFileToDB(key, blob); } catch(e) { console.warn('图片存储失败', e); }
                             spotMeta._imageKey = key;
                             spotMeta._imageUrl = URL.createObjectURL(blob);
+                        } else if (item.image && item.image.startsWith(MEDIA_PREFIX)) {
+                            try {
+                                const blob = await fetchBlobFromURL(item.image);
+                                const key = 'img_' + item.id;
+                                await saveFileToDB(key, blob);
+                                spotMeta._imageKey = key;
+                                spotMeta._imageUrl = URL.createObjectURL(blob);
+                            } catch(e) { console.warn('图片下载失败', e); }
                         }
-                        // 处理音频
+                        // 音频处理
                         for (const lang of ['zh','en','vi']) {
                             const audioSrc = item.audio?.[lang];
                             if (audioSrc && audioSrc.startsWith('data:')) {
                                 const blob = dataURLtoBlob(audioSrc);
                                 const key = `audio_${lang}_${item.id}`;
-                                await saveFileToDB(key, blob);
+                                try { await saveFileToDB(key, blob); } catch(e) { console.warn('音频存储失败', e); }
                                 spotMeta._audioKeys[lang] = key;
+                            } else if (audioSrc && audioSrc.startsWith(MEDIA_PREFIX)) {
+                                try {
+                                    const blob = await fetchBlobFromURL(audioSrc);
+                                    const key = `audio_${lang}_${item.id}`;
+                                    await saveFileToDB(key, blob);
+                                    spotMeta._audioKeys[lang] = key;
+                                } catch(e) { console.warn('音频下载失败', e); }
                             }
                         }
                         spots.push(spotMeta);
                     }
                     saveLocalMeta();
+                    updateStorageInfo();
                     console.log('从服务器加载并转换了', spots.length, '个点位');
                 } catch(e) {
+                    console.error('加载服务器数据失败', e);
                     spots = [];
                 }
-            }
-
-            function dataURLtoBlob(dataurl) {
-                const arr = dataurl.split(',');
-                const mime = arr[0].match(/:(.*?);/)[1];
-                const bstr = atob(arr[1]);
-                let n = bstr.length;
-                const u8arr = new Uint8Array(n);
-                while(n--) u8arr[n] = bstr.charCodeAt(n);
-                return new Blob([u8arr], {type: mime});
             }
 
             function renderList() {
@@ -314,7 +350,7 @@
                 spots.forEach(spot => {
                     const item = document.createElement('div');
                     item.className = 'spot-item';
-                    const imgSrc = spot._imageUrl || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" fill="%23ddd"><rect width="60" height="60"/></svg>';
+                    const imgSrc = spot._imageUrl || spot.image || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" fill="%23ddd"><rect width="60" height="60"/></svg>';
                     item.innerHTML = `
                         <img src="${imgSrc}">
                         <div class="info">
@@ -331,7 +367,6 @@
                     item.querySelector('.edit-btn').onclick = () => openEdit(spot.id);
                     item.querySelector('.del-btn').onclick = async () => {
                         if (confirm('确定删除？')) {
-                            // 删除关联的IDB文件
                             if (spot._imageKey) await deleteFileFromDB(spot._imageKey);
                             for (let lang of ['zh','en','vi']) {
                                 const key = spot._audioKeys[lang];
@@ -340,6 +375,7 @@
                             spots = spots.filter(s => s.id !== spot.id);
                             saveLocalMeta();
                             renderList();
+                            updateStorageInfo();
                             showToast('已删除');
                         }
                     };
@@ -351,10 +387,9 @@
                 $('#btnAddSpot').addEventListener('click', openAdd);
                 $('#btnCloseForm').addEventListener('click', closeForm);
                 $('#btnCancelForm').addEventListener('click', closeForm);
-                $('#btnExport').addEventListener('click', exportData);
+                $('#btnExport').addEventListener('click', exportZip);
                 $('#btnRefresh').addEventListener('click', async () => {
                     if (confirm('刷新将从服务器重新加载数据，本地未导出修改可能丢失，确定继续？')) {
-                        // 清空IDB中的旧文件
                         const tx = db.transaction(STORE_NAME, 'readwrite');
                         tx.objectStore(STORE_NAME).clear();
                         await tx.done;
@@ -362,17 +397,19 @@
                         spots = [];
                         await loadFromServer();
                         renderList();
+                        updateStorageInfo();
                         showToast('已从服务器同步');
                     }
                 });
                 $('#btnClearStorage').addEventListener('click', async () => {
-                    if (confirm('确定要清除所有本地缓存（包括上传的文件）吗？此操作不会影响服务器数据。')) {
+                    if (confirm('清除所有本地缓存（不影响服务器数据）？')) {
                         const tx = db.transaction(STORE_NAME, 'readwrite');
                         tx.objectStore(STORE_NAME).clear();
                         await tx.done;
                         localStorage.removeItem(STORAGE_KEY);
                         spots = [];
                         renderList();
+                        updateStorageInfo();
                         showToast('本地缓存已清除');
                     }
                 });
@@ -403,7 +440,8 @@
                     $('#imageLabel').classList.add('uploaded');
                 });
 
-                const setupAudioUpload = (lang, inputId, labelId, infoId) => {
+                // 音频上传
+                const setupAudio = (lang, inputId, labelId, infoId) => {
                     $(`#${inputId}`).addEventListener('change', function(e) {
                         const file = e.target.files[0];
                         if (!file) return;
@@ -413,13 +451,13 @@
                         $(`#${labelId}`).classList.add('uploaded');
                     });
                 };
-                setupAudioUpload('zh', 'audioZhInput', 'audioZhLabel', 'audioZhInfo');
-                setupAudioUpload('en', 'audioEnInput', 'audioEnLabel', 'audioEnInfo');
-                setupAudioUpload('vi', 'audioViInput', 'audioViLabel', 'audioViInfo');
+                setupAudio('zh', 'audioZhInput', 'audioZhLabel', 'audioZhInfo');
+                setupAudio('en', 'audioEnInput', 'audioEnLabel', 'audioEnInfo');
+                setupAudio('vi', 'audioViInput', 'audioViLabel', 'audioViInfo');
 
+                // 表单提交
                 $('#spotForm').addEventListener('submit', async function(e) {
                     e.preventDefault();
-                    // 保存当前编辑的点位
                     const spotId = editingId || 'spot_' + Date.now();
                     let spotMeta = {
                         id: spotId,
@@ -428,47 +466,70 @@
                         createdAt: editingId ? (spots.find(s => s.id === editingId)?.createdAt || Date.now()) : Date.now(),
                         _imageKey: null,
                         _audioKeys: { zh: null, en: null, vi: null },
-                        _imageUrl: null
+                        _imageUrl: null,
+                        image: '',
+                        audio: { zh: '', en: '', vi: '' }
                     };
 
                     // 处理图片
-                    if (pendingImageBlob) {
-                        const key = 'img_' + spotId;
-                        await saveFileToDB(key, pendingImageBlob);
-                        spotMeta._imageKey = key;
-                        spotMeta._imageUrl = URL.createObjectURL(pendingImageBlob);
-                    } else if (editingId) {
-                        // 保留原有图片
-                        const oldSpot = spots.find(s => s.id === editingId);
-                        if (oldSpot) {
-                            spotMeta._imageKey = oldSpot._imageKey;
-                            spotMeta._imageUrl = oldSpot._imageUrl;
-                        }
-                    }
-
-                    // 处理音频
-                    for (const lang of ['zh','en','vi']) {
-                        if (pendingAudioBlobs[lang]) {
-                            const key = `audio_${lang}_${spotId}`;
-                            await saveFileToDB(key, pendingAudioBlobs[lang]);
-                            spotMeta._audioKeys[lang] = key;
+                    try {
+                        if (pendingImageBlob) {
+                            const ext = pendingImageBlob.type.split('/')[1] || 'jpg';
+                            const filename = `${spotId}_image.${ext}`;
+                            const key = 'img_' + spotId;
+                            await saveFileToDB(key, pendingImageBlob);
+                            spotMeta._imageKey = key;
+                            spotMeta._imageUrl = URL.createObjectURL(pendingImageBlob);
+                            spotMeta.image = MEDIA_PREFIX + filename;
                         } else if (editingId) {
-                            const oldSpot = spots.find(s => s.id === editingId);
-                            if (oldSpot && oldSpot._audioKeys[lang]) {
-                                spotMeta._audioKeys[lang] = oldSpot._audioKeys[lang];
+                            const old = spots.find(s => s.id === editingId);
+                            if (old) {
+                                spotMeta._imageKey = old._imageKey;
+                                spotMeta._imageUrl = old._imageUrl;
+                                spotMeta.image = old.image;
                             }
                         }
+                        // 处理音频
+                        for (const lang of ['zh','en','vi']) {
+                            if (pendingAudioBlobs[lang]) {
+                                const blob = pendingAudioBlobs[lang];
+                                const ext = blob.type.split('/')[1] || 'mp3';
+                                const filename = `${spotId}_audio_${lang}.${ext}`;
+                                const key = `audio_${lang}_${spotId}`;
+                                await saveFileToDB(key, blob);
+                                spotMeta._audioKeys[lang] = key;
+                                spotMeta.audio[lang] = MEDIA_PREFIX + filename;
+                            } else if (editingId) {
+                                const old = spots.find(s => s.id === editingId);
+                                if (old) {
+                                    spotMeta._audioKeys[lang] = old._audioKeys[lang];
+                                    spotMeta.audio[lang] = old.audio[lang];
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        if (err.message === 'QuotaExceededError') {
+                            showToast('存储空间不足！请先导出数据并清理缓存后继续添加点位。', 'error');
+                        } else {
+                            showToast('保存失败，浏览器存储异常，请尝试清理缓存。', 'error');
+                        }
+                        // 回滚已保存的图片/音频（避免垃圾数据）
+                        if (spotMeta._imageKey) await deleteFileFromDB(spotMeta._imageKey).catch(()=>{});
+                        for (let lang of ['zh','en','vi']) {
+                            if (spotMeta._audioKeys[lang]) await deleteFileFromDB(spotMeta._audioKeys[lang]).catch(()=>{});
+                        }
+                        return;
                     }
 
+                    // 更新列表
                     if (editingId) {
                         const idx = spots.findIndex(s => s.id === editingId);
                         if (idx >= 0) {
-                            // 如果更换了图片/音频，删除旧文件
                             const old = spots[idx];
-                            if (old._imageKey && old._imageKey !== spotMeta._imageKey) await deleteFileFromDB(old._imageKey);
+                            if (old._imageKey && old._imageKey !== spotMeta._imageKey) await deleteFileFromDB(old._imageKey).catch(()=>{});
                             for (const lang of ['zh','en','vi']) {
                                 const oldKey = old._audioKeys[lang];
-                                if (oldKey && oldKey !== spotMeta._audioKeys[lang]) await deleteFileFromDB(oldKey);
+                                if (oldKey && oldKey !== spotMeta._audioKeys[lang]) await deleteFileFromDB(oldKey).catch(()=>{});
                             }
                             spots[idx] = spotMeta;
                         }
@@ -477,6 +538,7 @@
                     }
                     saveLocalMeta();
                     renderList();
+                    updateStorageInfo();
                     closeForm();
                     showToast('保存成功');
                 });
@@ -499,29 +561,26 @@
                 $('#descZh').value = spot.description.zh || '';
                 $('#descEn').value = spot.description.en || '';
                 $('#descVi').value = spot.description.vi || '';
-                // 清空暂存文件
                 pendingImageBlob = null;
                 if (pendingImagePreviewUrl) URL.revokeObjectURL(pendingImagePreviewUrl);
                 pendingImagePreviewUrl = null;
                 pendingAudioBlobs = { zh: null, en: null, vi: null };
                 pendingAudioNames = { zh: '', en: '', vi: '' };
-                // 显示已有图片
                 if (spot._imageUrl) {
                     $('#imagePreview').src = spot._imageUrl;
                     $('#imagePreview').style.display = '';
                     $('#imageLabel').classList.add('uploaded');
-                    $('#imageInfo').textContent = '已上传';
+                    $('#imageInfo').textContent = spot.image || '已上传';
                 } else {
                     $('#imagePreview').style.display = 'none';
                     $('#imageLabel').classList.remove('uploaded');
                     $('#imageInfo').textContent = '';
                 }
-                // 显示已有音频文件名（无法直接显示内容，仅显示状态）
                 ['zh','en','vi'].forEach(lang => {
                     const L = lang.charAt(0).toUpperCase() + lang.slice(1);
                     if (spot._audioKeys[lang]) {
                         $(`#audio${L}Label`).classList.add('uploaded');
-                        $(`#audio${L}Info`).textContent = '已上传';
+                        $(`#audio${L}Info`).textContent = spot.audio[lang] || '已上传';
                     } else {
                         $(`#audio${L}Label`).classList.remove('uploaded');
                         $(`#audio${L}Info`).textContent = '';
@@ -546,47 +605,47 @@
                 $('#imageInput').value = '';
             }
             function closeForm() { $('#modalForm').style.display = 'none'; }
-            function saveLocalMeta() {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(spots));
-            }
+            function saveLocalMeta() { localStorage.setItem(STORAGE_KEY, JSON.stringify(spots)); }
 
-            async function exportData() {
-                showToast('正在准备导出，请稍候...');
+            async function exportZip() {
+                if (typeof JSZip === 'undefined') {
+                    showToast('JSZip 加载失败，请检查网络。', 'error');
+                    return;
+                }
+                showToast('正在打包文件，请稍候...');
+                const zip = new JSZip();
                 const exportSpots = [];
                 for (const spot of spots) {
                     const item = {
                         id: spot.id,
                         name: {...spot.name},
                         description: {...spot.description},
-                        image: '',
-                        audio: { zh: '', en: '', vi: '' },
+                        image: spot.image || '',
+                        audio: {...spot.audio},
                         audioNames: { zh: '', en: '', vi: '' },
                         createdAt: spot.createdAt
                     };
-                    // 图片
-                    if (spot._imageKey) {
+                    // 添加文件
+                    if (spot._imageKey && spot.image.startsWith(MEDIA_PREFIX)) {
                         const blob = await getFileFromDB(spot._imageKey);
-                        if (blob) item.image = await blobToBase64(blob);
+                        if (blob) zip.file(spot.image, blob);
                     }
-                    // 音频
                     for (const lang of ['zh','en','vi']) {
                         const key = spot._audioKeys[lang];
-                        if (key) {
+                        if (key && spot.audio[lang].startsWith(MEDIA_PREFIX)) {
                             const blob = await getFileFromDB(key);
-                            if (blob) item.audio[lang] = await blobToBase64(blob);
-                            // 文件名从元数据中无法恢复，可留空或标记
-                            item.audioNames[lang] = '';
+                            if (blob) zip.file(spot.audio[lang], blob);
                         }
                     }
                     exportSpots.push(item);
                 }
-                const json = JSON.stringify(exportSpots, null, 2);
-                const blob = new Blob([json], { type: 'application/json' });
+                zip.file('spots.json', JSON.stringify(exportSpots, null, 2));
+                const content = await zip.generateAsync({ type: 'blob' });
                 const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = 'spots.json';
+                a.href = URL.createObjectURL(content);
+                a.download = 'scenic_data.zip';
                 a.click();
-                showToast('数据已导出，请上传到 GitHub');
+                showToast('ZIP 已下载！解压后将所有文件上传到 GitHub 仓库根目录。');
             }
 
             function showQR(id) {
@@ -595,12 +654,12 @@
                 $('#qrUrlText').textContent = url;
                 $('#qrCanvas').innerHTML = '';
                 $('#modalQR').style.display = 'flex';
-                try { new QRCode($('#qrCanvas'), { text: url, width: 200, height: 200, colorDark: '#2D3436' }); } catch(e){}
+                try { new QRCode($('#qrCanvas'), { text: url, width: 200, height: 200, colorDark: '#2D3436' }); } catch(e) {}
             }
             function showToast(msg, type='') {
                 const t = $('#toast');
                 t.textContent = msg; t.className = 'toast ' + type + ' show';
-                setTimeout(() => t.classList.remove('show'), 3000);
+                setTimeout(() => t.classList.remove('show'), 4000);
             }
             function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
         })();
