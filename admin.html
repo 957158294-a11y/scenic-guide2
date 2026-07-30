@@ -27,6 +27,7 @@
         .btn-outline { background:transparent; color:var(--primary); border:2px solid var(--primary); }
         .btn-accent { background:#F0A860; color:#fff; }
         .btn-danger { background:#E85D5D; color:#fff; }
+        .btn-warning { background:#f0a860; color:#fff; }
         .main-container { max-width:1000px; margin:0 auto; padding:20px 16px; }
         .spot-list { display:flex; flex-direction:column; gap:12px; margin-bottom:20px; }
         .spot-item { background:#fff; border-radius:var(--radius); padding:14px; box-shadow:var(--shadow); display:flex; align-items:center; gap:12px; }
@@ -47,9 +48,10 @@
         .audio-row .lang-badge { width:30px; text-align:center; }
         .toast { position:fixed; bottom:30px; left:50%; transform:translateX(-50%) translateY(100px); background:#333; color:#fff; padding:12px 24px; border-radius:25px; z-index:500; transition:0.35s; white-space:nowrap; }
         .toast.show { transform:translateX(-50%) translateY(0); }
+        .toast.error { background:#D32F2F; }
         .password-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:999; display:flex; align-items:center; justify-content:center; }
         .password-box { background:#fff; padding:30px; border-radius:16px; text-align:center; width:90%; max-width:350px; }
-        .info-bar { background:#fff; padding:12px; border-radius:12px; margin-bottom:16px; font-size:0.85rem; display:flex; justify-content:space-between; align-items:center; }
+        .info-bar { background:#fff; padding:12px; border-radius:12px; margin-bottom:16px; font-size:0.85rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
     </style>
 </head>
 <body>
@@ -75,11 +77,12 @@
                 </div>
                 <button class="btn btn-outline btn-sm" id="btnRefresh">🔄 刷新数据</button>
                 <button class="btn btn-outline btn-sm" id="btnExport">📤 导出数据</button>
+                <button class="btn btn-warning btn-sm" id="btnClearStorage">🗑️ 清除缓存</button>
             </div>
         </header>
         <div class="main-container">
             <div class="info-bar">
-                <span>📌 自动保存已开启，关闭页面数据不会丢失</span>
+                <span>📌 所有文件暂存于浏览器数据库，无容量限制</span>
                 <span>点位：<strong id="spotCount">0</strong></span>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -143,21 +146,82 @@
     <script>
         (function() {
             const ADMIN_PASSWORD = 'admin888';
-            const STORAGE_KEY = 'scenic_admin_spots';
+            const STORAGE_KEY = 'scenic_admin_spots_meta'; // 只存元数据，不含Base64文件
+            const DB_NAME = 'scenic_files_db';
+            const DB_VERSION = 1;
+            const STORE_NAME = 'files';
+
             const $ = s => document.querySelector(s);
-            let spots = [];
+            let spots = []; // 存储点位元数据，图片/音频字段为数据库中的key或空
             let currentLang = 'zh';
             let editingId = null;
-            let pendingImage = null;
-            let pendingAudio = { zh: null, en: null, vi: null };
+            // 当前表单中待上传的文件（图片及三语音频），以Blob形式暂存
+            let pendingImageBlob = null;
+            let pendingImagePreviewUrl = null;
+            let pendingAudioBlobs = { zh: null, en: null, vi: null };
             let pendingAudioNames = { zh: '', en: '', vi: '' };
 
+            // IndexedDB 初始化
+            let db = null;
+            function openDB() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(DB_NAME, DB_VERSION);
+                    request.onupgradeneeded = (e) => {
+                        const db = e.target.result;
+                        if (!db.objectStoreNames.contains(STORE_NAME)) {
+                            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                        }
+                    };
+                    request.onsuccess = (e) => {
+                        db = e.target.result;
+                        resolve(db);
+                    };
+                    request.onerror = (e) => reject(e.target.error);
+                });
+            }
+            function saveFileToDB(id, blob) {
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_NAME, 'readwrite');
+                    const store = tx.objectStore(STORE_NAME);
+                    store.put({ id, blob });
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+            }
+            function getFileFromDB(id) {
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_NAME, 'readonly');
+                    const store = tx.objectStore(STORE_NAME);
+                    const request = store.get(id);
+                    request.onsuccess = () => resolve(request.result ? request.result.blob : null);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            function deleteFileFromDB(id) {
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_NAME, 'readwrite');
+                    const store = tx.objectStore(STORE_NAME);
+                    store.delete(id);
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+            }
+            function blobToBase64(blob) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+            }
+
             // 密码
-            $('#btnLogin').addEventListener('click', () => {
+            $('#btnLogin').addEventListener('click', async () => {
                 if ($('#passwordInput').value === ADMIN_PASSWORD) {
                     $('#passwordOverlay').style.display = 'none';
                     $('#appMain').style.display = '';
-                    init();
+                    await openDB();
+                    await init();
                 } else {
                     $('#passwordError').style.display = '';
                 }
@@ -165,27 +229,82 @@
             $('#passwordInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnLogin').click(); });
 
             async function init() {
-                // 优先从本地存储加载
                 const saved = localStorage.getItem(STORAGE_KEY);
                 if (saved) {
-                    spots = JSON.parse(saved);
+                    try {
+                        spots = JSON.parse(saved);
+                    } catch (e) {
+                        spots = [];
+                    }
                     console.log('从本地缓存加载了', spots.length, '个点位');
                 } else {
                     await loadFromServer();
                 }
+                // 刷新所有预览图（从IDB读取blob生成blob URL）
+                await refreshAllPreviews();
                 renderList();
                 bindEvents();
+            }
+
+            async function refreshAllPreviews() {
+                for (let spot of spots) {
+                    if (spot._imageKey) {
+                        const blob = await getFileFromDB(spot._imageKey);
+                        if (blob) spot._imageUrl = URL.createObjectURL(blob);
+                    }
+                }
             }
 
             async function loadFromServer() {
                 try {
                     const res = await fetch('spots.json?t=' + Date.now());
-                    spots = await res.json();
-                    console.log('从服务器加载了', spots.length, '个点位');
-                    localStorage.setItem(STORAGE_KEY, JSON.stringify(spots));
+                    const serverSpots = await res.json();
+                    // 将服务器数据转为本地元数据（图片音频存入IDB，并用key替换）
+                    spots = [];
+                    for (const item of serverSpots) {
+                        const spotMeta = {
+                            id: item.id,
+                            name: {...item.name},
+                            description: {...item.description},
+                            createdAt: item.createdAt || Date.now(),
+                            _imageKey: null,
+                            _audioKeys: { zh: null, en: null, vi: null }
+                        };
+                        // 处理图片
+                        if (item.image && item.image.startsWith('data:')) {
+                            const blob = dataURLtoBlob(item.image);
+                            const key = 'img_' + item.id;
+                            await saveFileToDB(key, blob);
+                            spotMeta._imageKey = key;
+                            spotMeta._imageUrl = URL.createObjectURL(blob);
+                        }
+                        // 处理音频
+                        for (const lang of ['zh','en','vi']) {
+                            const audioSrc = item.audio?.[lang];
+                            if (audioSrc && audioSrc.startsWith('data:')) {
+                                const blob = dataURLtoBlob(audioSrc);
+                                const key = `audio_${lang}_${item.id}`;
+                                await saveFileToDB(key, blob);
+                                spotMeta._audioKeys[lang] = key;
+                            }
+                        }
+                        spots.push(spotMeta);
+                    }
+                    saveLocalMeta();
+                    console.log('从服务器加载并转换了', spots.length, '个点位');
                 } catch(e) {
                     spots = [];
                 }
+            }
+
+            function dataURLtoBlob(dataurl) {
+                const arr = dataurl.split(',');
+                const mime = arr[0].match(/:(.*?);/)[1];
+                const bstr = atob(arr[1]);
+                let n = bstr.length;
+                const u8arr = new Uint8Array(n);
+                while(n--) u8arr[n] = bstr.charCodeAt(n);
+                return new Blob([u8arr], {type: mime});
             }
 
             function renderList() {
@@ -195,8 +314,9 @@
                 spots.forEach(spot => {
                     const item = document.createElement('div');
                     item.className = 'spot-item';
+                    const imgSrc = spot._imageUrl || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" fill="%23ddd"><rect width="60" height="60"/></svg>';
                     item.innerHTML = `
-                        <img src="${spot.image || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" fill="%23ddd"><rect width="60" height="60"/></svg>'}">
+                        <img src="${imgSrc}">
                         <div class="info">
                             <div class="name">${escapeHtml(spot.name[currentLang] || spot.name.zh || '未命名')}</div>
                             <div class="desc">${escapeHtml((spot.description[currentLang] || spot.description.zh || '').substring(0,60))}</div>
@@ -209,10 +329,16 @@
                     `;
                     item.querySelector('.qr-btn').onclick = () => showQR(spot.id);
                     item.querySelector('.edit-btn').onclick = () => openEdit(spot.id);
-                    item.querySelector('.del-btn').onclick = () => {
+                    item.querySelector('.del-btn').onclick = async () => {
                         if (confirm('确定删除？')) {
+                            // 删除关联的IDB文件
+                            if (spot._imageKey) await deleteFileFromDB(spot._imageKey);
+                            for (let lang of ['zh','en','vi']) {
+                                const key = spot._audioKeys[lang];
+                                if (key) await deleteFileFromDB(key);
+                            }
                             spots = spots.filter(s => s.id !== spot.id);
-                            saveLocal();
+                            saveLocalMeta();
                             renderList();
                             showToast('已删除');
                         }
@@ -228,9 +354,26 @@
                 $('#btnExport').addEventListener('click', exportData);
                 $('#btnRefresh').addEventListener('click', async () => {
                     if (confirm('刷新将从服务器重新加载数据，本地未导出修改可能丢失，确定继续？')) {
+                        // 清空IDB中的旧文件
+                        const tx = db.transaction(STORE_NAME, 'readwrite');
+                        tx.objectStore(STORE_NAME).clear();
+                        await tx.done;
+                        localStorage.removeItem(STORAGE_KEY);
+                        spots = [];
                         await loadFromServer();
                         renderList();
                         showToast('已从服务器同步');
+                    }
+                });
+                $('#btnClearStorage').addEventListener('click', async () => {
+                    if (confirm('确定要清除所有本地缓存（包括上传的文件）吗？此操作不会影响服务器数据。')) {
+                        const tx = db.transaction(STORE_NAME, 'readwrite');
+                        tx.objectStore(STORE_NAME).clear();
+                        await tx.done;
+                        localStorage.removeItem(STORAGE_KEY);
+                        spots = [];
+                        renderList();
+                        showToast('本地缓存已清除');
                     }
                 });
                 $('#btnCloseQR').addEventListener('click', () => { $('#modalQR').style.display = 'none'; $('#qrCanvas').innerHTML = ''; });
@@ -251,62 +394,88 @@
                 $('#imageInput').addEventListener('change', function(e) {
                     const file = e.target.files[0];
                     if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = ev => {
-                        const img = new Image();
-                        img.onload = () => {
-                            const canvas = document.createElement('canvas');
-                            let w = img.width, h = img.height;
-                            if (w > 800) { h = Math.round(h * 800 / w); w = 800; }
-                            canvas.width = w; canvas.height = h;
-                            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-                            pendingImage = canvas.toDataURL('image/jpeg', 0.7);
-                            $('#imagePreview').src = pendingImage;
-                            $('#imagePreview').style.display = '';
-                            $('#imageInfo').textContent = file.name;
-                            $('#imageLabel').classList.add('uploaded');
-                        };
-                        img.src = ev.target.result;
-                    };
-                    reader.readAsDataURL(file);
+                    pendingImageBlob = file;
+                    if (pendingImagePreviewUrl) URL.revokeObjectURL(pendingImagePreviewUrl);
+                    pendingImagePreviewUrl = URL.createObjectURL(file);
+                    $('#imagePreview').src = pendingImagePreviewUrl;
+                    $('#imagePreview').style.display = '';
+                    $('#imageInfo').textContent = file.name;
+                    $('#imageLabel').classList.add('uploaded');
                 });
 
                 const setupAudioUpload = (lang, inputId, labelId, infoId) => {
                     $(`#${inputId}`).addEventListener('change', function(e) {
                         const file = e.target.files[0];
                         if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = ev => {
-                            pendingAudio[lang] = ev.target.result;
-                            pendingAudioNames[lang] = file.name;
-                            $(`#${infoId}`).textContent = file.name;
-                            $(`#${labelId}`).classList.add('uploaded');
-                        };
-                        reader.readAsDataURL(file);
+                        pendingAudioBlobs[lang] = file;
+                        pendingAudioNames[lang] = file.name;
+                        $(`#${infoId}`).textContent = file.name;
+                        $(`#${labelId}`).classList.add('uploaded');
                     });
                 };
                 setupAudioUpload('zh', 'audioZhInput', 'audioZhLabel', 'audioZhInfo');
                 setupAudioUpload('en', 'audioEnInput', 'audioEnLabel', 'audioEnInfo');
                 setupAudioUpload('vi', 'audioViInput', 'audioViLabel', 'audioViInfo');
 
-                $('#spotForm').addEventListener('submit', function(e) {
+                $('#spotForm').addEventListener('submit', async function(e) {
                     e.preventDefault();
-                    const spotData = {
-                        id: editingId || 'spot_' + Date.now(),
+                    // 保存当前编辑的点位
+                    const spotId = editingId || 'spot_' + Date.now();
+                    let spotMeta = {
+                        id: spotId,
                         name: { zh: $('#nameZh').value.trim(), en: $('#nameEn').value.trim(), vi: $('#nameVi').value.trim() },
                         description: { zh: $('#descZh').value.trim(), en: $('#descEn').value.trim(), vi: $('#descVi').value.trim() },
-                        image: pendingImage || '',
-                        audio: { zh: pendingAudio.zh || '', en: pendingAudio.en || '', vi: pendingAudio.vi || '' },
-                        audioNames: { zh: pendingAudioNames.zh || '', en: pendingAudioNames.en || '', vi: pendingAudioNames.vi || '' },
-                        createdAt: editingId ? (spots.find(s => s.id === editingId)?.createdAt || Date.now()) : Date.now()
+                        createdAt: editingId ? (spots.find(s => s.id === editingId)?.createdAt || Date.now()) : Date.now(),
+                        _imageKey: null,
+                        _audioKeys: { zh: null, en: null, vi: null },
+                        _imageUrl: null
                     };
+
+                    // 处理图片
+                    if (pendingImageBlob) {
+                        const key = 'img_' + spotId;
+                        await saveFileToDB(key, pendingImageBlob);
+                        spotMeta._imageKey = key;
+                        spotMeta._imageUrl = URL.createObjectURL(pendingImageBlob);
+                    } else if (editingId) {
+                        // 保留原有图片
+                        const oldSpot = spots.find(s => s.id === editingId);
+                        if (oldSpot) {
+                            spotMeta._imageKey = oldSpot._imageKey;
+                            spotMeta._imageUrl = oldSpot._imageUrl;
+                        }
+                    }
+
+                    // 处理音频
+                    for (const lang of ['zh','en','vi']) {
+                        if (pendingAudioBlobs[lang]) {
+                            const key = `audio_${lang}_${spotId}`;
+                            await saveFileToDB(key, pendingAudioBlobs[lang]);
+                            spotMeta._audioKeys[lang] = key;
+                        } else if (editingId) {
+                            const oldSpot = spots.find(s => s.id === editingId);
+                            if (oldSpot && oldSpot._audioKeys[lang]) {
+                                spotMeta._audioKeys[lang] = oldSpot._audioKeys[lang];
+                            }
+                        }
+                    }
+
                     if (editingId) {
                         const idx = spots.findIndex(s => s.id === editingId);
-                        if (idx >= 0) spots[idx] = spotData;
+                        if (idx >= 0) {
+                            // 如果更换了图片/音频，删除旧文件
+                            const old = spots[idx];
+                            if (old._imageKey && old._imageKey !== spotMeta._imageKey) await deleteFileFromDB(old._imageKey);
+                            for (const lang of ['zh','en','vi']) {
+                                const oldKey = old._audioKeys[lang];
+                                if (oldKey && oldKey !== spotMeta._audioKeys[lang]) await deleteFileFromDB(oldKey);
+                            }
+                            spots[idx] = spotMeta;
+                        }
                     } else {
-                        spots.unshift(spotData);
+                        spots.unshift(spotMeta);
                     }
-                    saveLocal();
+                    saveLocalMeta();
                     renderList();
                     closeForm();
                     showToast('保存成功');
@@ -330,20 +499,32 @@
                 $('#descZh').value = spot.description.zh || '';
                 $('#descEn').value = spot.description.en || '';
                 $('#descVi').value = spot.description.vi || '';
-                pendingImage = spot.image || null;
-                pendingAudio = { ...(spot.audio || {}) };
-                pendingAudioNames = { ...(spot.audioNames || {}) };
-                if (spot.image) {
-                    $('#imagePreview').src = spot.image;
+                // 清空暂存文件
+                pendingImageBlob = null;
+                if (pendingImagePreviewUrl) URL.revokeObjectURL(pendingImagePreviewUrl);
+                pendingImagePreviewUrl = null;
+                pendingAudioBlobs = { zh: null, en: null, vi: null };
+                pendingAudioNames = { zh: '', en: '', vi: '' };
+                // 显示已有图片
+                if (spot._imageUrl) {
+                    $('#imagePreview').src = spot._imageUrl;
                     $('#imagePreview').style.display = '';
                     $('#imageLabel').classList.add('uploaded');
                     $('#imageInfo').textContent = '已上传';
+                } else {
+                    $('#imagePreview').style.display = 'none';
+                    $('#imageLabel').classList.remove('uploaded');
+                    $('#imageInfo').textContent = '';
                 }
+                // 显示已有音频文件名（无法直接显示内容，仅显示状态）
                 ['zh','en','vi'].forEach(lang => {
-                    if (spot.audio?.[lang]) {
-                        const L = lang.charAt(0).toUpperCase() + lang.slice(1);
+                    const L = lang.charAt(0).toUpperCase() + lang.slice(1);
+                    if (spot._audioKeys[lang]) {
                         $(`#audio${L}Label`).classList.add('uploaded');
-                        $(`#audio${L}Info`).textContent = spot.audioNames?.[lang] || '已上传';
+                        $(`#audio${L}Info`).textContent = '已上传';
+                    } else {
+                        $(`#audio${L}Label`).classList.remove('uploaded');
+                        $(`#audio${L}Info`).textContent = '';
                     }
                 });
                 $('#formTitle').textContent = '编辑点位';
@@ -351,8 +532,10 @@
             }
             function resetForm() {
                 ['editId','nameZh','nameEn','nameVi','descZh','descEn','descVi'].forEach(id => $('#'+id).value='');
-                pendingImage = null;
-                pendingAudio = { zh: null, en: null, vi: null };
+                pendingImageBlob = null;
+                if (pendingImagePreviewUrl) URL.revokeObjectURL(pendingImagePreviewUrl);
+                pendingImagePreviewUrl = null;
+                pendingAudioBlobs = { zh: null, en: null, vi: null };
                 pendingAudioNames = { zh: '', en: '', vi: '' };
                 $('#imagePreview').style.display = 'none'; $('#imageInfo').textContent = ''; $('#imageLabel').classList.remove('uploaded');
                 ['Zh','En','Vi'].forEach(L => {
@@ -363,17 +546,49 @@
                 $('#imageInput').value = '';
             }
             function closeForm() { $('#modalForm').style.display = 'none'; }
-            function saveLocal() { localStorage.setItem(STORAGE_KEY, JSON.stringify(spots)); }
-            function exportData() {
-                saveLocal();
-                const json = JSON.stringify(spots, null, 2);
+            function saveLocalMeta() {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(spots));
+            }
+
+            async function exportData() {
+                showToast('正在准备导出，请稍候...');
+                const exportSpots = [];
+                for (const spot of spots) {
+                    const item = {
+                        id: spot.id,
+                        name: {...spot.name},
+                        description: {...spot.description},
+                        image: '',
+                        audio: { zh: '', en: '', vi: '' },
+                        audioNames: { zh: '', en: '', vi: '' },
+                        createdAt: spot.createdAt
+                    };
+                    // 图片
+                    if (spot._imageKey) {
+                        const blob = await getFileFromDB(spot._imageKey);
+                        if (blob) item.image = await blobToBase64(blob);
+                    }
+                    // 音频
+                    for (const lang of ['zh','en','vi']) {
+                        const key = spot._audioKeys[lang];
+                        if (key) {
+                            const blob = await getFileFromDB(key);
+                            if (blob) item.audio[lang] = await blobToBase64(blob);
+                            // 文件名从元数据中无法恢复，可留空或标记
+                            item.audioNames[lang] = '';
+                        }
+                    }
+                    exportSpots.push(item);
+                }
+                const json = JSON.stringify(exportSpots, null, 2);
                 const blob = new Blob([json], { type: 'application/json' });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = 'spots.json';
                 a.click();
-                showToast('数据已导出为 spots.json，请上传到 GitHub 仓库替换原文件');
+                showToast('数据已导出，请上传到 GitHub');
             }
+
             function showQR(id) {
                 const base = window.location.origin + window.location.pathname.replace('admin.html','index.html');
                 const url = base + '?point=' + id;
@@ -382,10 +597,10 @@
                 $('#modalQR').style.display = 'flex';
                 try { new QRCode($('#qrCanvas'), { text: url, width: 200, height: 200, colorDark: '#2D3436' }); } catch(e){}
             }
-            function showToast(msg) {
+            function showToast(msg, type='') {
                 const t = $('#toast');
-                t.textContent = msg; t.className = 'toast show';
-                setTimeout(() => t.classList.remove('show'), 2000);
+                t.textContent = msg; t.className = 'toast ' + type + ' show';
+                setTimeout(() => t.classList.remove('show'), 3000);
             }
             function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
         })();
